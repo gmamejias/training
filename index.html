@@ -404,6 +404,8 @@ const KEY='gladya_training_v1';
 let mem=null;
 function load(){try{const v=JSON.parse(localStorage.getItem(KEY));if(v&&v.sessions)return v}catch(e){}return mem||{sessions:[],bw:[],drafts:{}}}
 function save(db){mem=db;try{localStorage.setItem(KEY,JSON.stringify(db))}catch(e){}}
+let EDIT={};try{EDIT=JSON.parse(localStorage.getItem('gladya_training_v1_edit'))||{}}catch(e){}
+function saveEdit(){try{localStorage.setItem('gladya_training_v1_edit',JSON.stringify(EDIT))}catch(e){}}
 let DB=load();if(!DB.drafts)DB.drafts={};if(!DB.bw)DB.bw=[];
 
 /* cloud sync: one private doc per session under data/users/<id> */
@@ -462,7 +464,9 @@ function renderSession(type){
     }
     h+='</div>';
   });
-  h+=`</div><div class="savebar"><label for="${type}-date">Date <input type="date" id="${type}-date" value="${today()}"></label><span class="grow"></span><button class="btn ghost" data-clear="${type}">Clear</button><button class="btn" data-save="${type}">Save session</button></div>`;
+  const ed=EDIT[type];
+  if(ed)h+=`</div><div class="savebar" style="background:var(--surface2);border:1px solid var(--c)"><span class="grow">Editing your <b>${fmtD(ed.date)}</b> session. Saving replaces it.</span><button class="btn ghost" data-cancel-edit="${type}">Cancel edit</button>`;
+  h+=`</div><div class="savebar"><label for="${type}-date">Date <input type="date" id="${type}-date" value="${ed?ed.date:today()}"></label><span class="grow"></span><button class="btn ghost" data-clear="${type}">Clear</button><button class="btn" data-save="${type}">Save session</button></div>`;
   el.innerHTML=h;
 }
 function readForm(type){
@@ -490,12 +494,12 @@ document.addEventListener('click',e=>{
     for(const k in raw){data[k]=Array.isArray(raw[k])?raw[k].filter(Boolean).map(x=>({w:x.w??null,r:x.r??null})).filter(x=>x.r!=null||x.w!=null):raw[k]}
     for(const k in data)if(Array.isArray(data[k])&&!data[k].length)delete data[k];
     if(!Object.keys(data).length){toast('Enter at least one set or tick one item');return}
-    const sess={id:Date.now(),date:$('#'+type+'-date').value||today(),type,data};DB.sessions.push(sess);
+    const eid=EDIT[type]&&EDIT[type].id;const sess={id:eid||Date.now(),date:$('#'+type+'-date').value||today(),type,data};if(eid)DB.sessions=DB.sessions.filter(s=>s.id!==eid);DB.sessions.push(sess);delete EDIT[type];saveEdit();
     delete DB.drafts[type];save(DB);cloudPut('s_'+sess.id,sess);cloudDrafts();renderSession(type);toast(LABELS[type]+' saved');
   }
   if(c){
     const type=c.dataset.clear;
-    if(c.dataset.armed){delete DB.drafts[type];save(DB);cloudDrafts();renderSession(type);toast('Cleared')}
+    if(c.dataset.armed){delete DB.drafts[type];delete EDIT[type];saveEdit();save(DB);cloudDrafts();renderSession(type);toast('Cleared')}
     else{c.dataset.armed=1;c.textContent='Tap again to clear';setTimeout(()=>{if(c.isConnected){delete c.dataset.armed;c.textContent='Clear'}},3000)}
   }
 });
@@ -544,11 +548,13 @@ function renderProg(){
     let sum='';
     if(s.type==='court')sum=[s.data.min?s.data.min+' min':'',s.data.rpe?'effort '+s.data.rpe:''].filter(Boolean).join(' · ')||'Logged';
     else{const P=PLAN[s.type];const done=Object.keys(s.data).length;sum=`${done} of ${P.items.length} items`}
-    return `<div class="hrow"><span class="dt">${s.date.slice(5)}</span><div style="min-width:0;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="pill" style="--c:var(${COLORS[s.type]})">${LABELS[s.type]}</span><span class="empty">${sum}</span></div><button class="x" data-del="${s.id}">Delete</button></div>`;
+    return `<div class="hrow"><span class="dt">${s.date.slice(5)}</span><div style="min-width:0;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="pill" style="--c:var(${COLORS[s.type]})">${LABELS[s.type]}</span><span class="empty">${sum}</span></div><div style="display:flex;gap:6px">${s.type!=='court'?`<button class="x" data-edit="${s.id}">Edit</button>`:''}<button class="x" data-del="${s.id}">Delete</button></div></div>`;
   }).join(''):'<p class="empty">No sessions yet. Saved workouts appear here.</p>';
   renderCharts();
 }
 $('#hist').addEventListener('click',e=>{
+  const ebtn=e.target.closest('[data-edit]');
+  if(ebtn){const s=DB.sessions.find(x=>String(x.id)===ebtn.dataset.edit);if(!s)return;EDIT[s.type]={id:s.id,date:s.date};saveEdit();DB.drafts[s.type]=JSON.parse(JSON.stringify(s.data));save(DB);renderSession(s.type);show(s.type);toast('Editing '+fmtD(s.date)+' session');return}
   const b=e.target.closest('[data-del]');if(!b)return;
   if(b.classList.contains('arm')){DB.sessions=DB.sessions.filter(s=>String(s.id)!==b.dataset.del);save(DB);cloudDel('s_'+b.dataset.del);renderProg();['tue','thu','sat'].forEach(renderSession);toast('Deleted')}
   else{b.classList.add('arm');b.textContent='Confirm';setTimeout(()=>{if(b.isConnected){b.classList.remove('arm');b.textContent='Delete'}},3000)}
@@ -663,6 +669,7 @@ function renderCharts(){
 const REST={db_bench:150,inc_db:150,db_ohp:150,pd_b:150,squat:150,rdl:150,thrust:150,pd_a:120,cable_row:120,db_row:120,mach_press:120,lunge:120,lat_raise:75,tri_push:75,hammer:75,facepull:75,legcurl:75,calf:75,deadbug:45,pallof:45,sideplank:45};
 function restFor(ex){return REST[ex.id]||(ex.k==='body'?45:90)}
 function fmtRest(s){return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')}
+document.addEventListener('click',e=>{const b=e.target.closest('[data-cancel-edit]');if(!b)return;const t=b.dataset.cancelEdit;delete EDIT[t];saveEdit();delete DB.drafts[t];save(DB);cloudDrafts();renderSession(t);toast('Edit cancelled')});
 let RT=null,rtI=null,wl=null,actx=null;
 function unlockAudio(){if(actx)return;try{actx=new (window.AudioContext||window.webkitAudioContext)();const o=actx.createOscillator(),g=actx.createGain();g.gain.value=0;o.connect(g).connect(actx.destination);o.start();o.stop(actx.currentTime+.01)}catch(e){}}
 ['touchend','click'].forEach(ev=>document.addEventListener(ev,unlockAudio));
